@@ -98,6 +98,21 @@ impl Ui {
         })
     }
 
+    /// Every URL this package declares, document and static alike.
+    ///
+    /// Exists so tests can ask the manifest what it serves instead of
+    /// restating a list that goes stale the moment the bundle layout changes
+    /// -- which is the entire reason routes.json is the contract. Nothing in
+    /// the running app needs it yet, hence cfg(test); drop the attribute the
+    /// day something does.
+    #[cfg(test)]
+    pub fn routes(&self) -> impl Iterator<Item = &str> {
+        self.document_urls
+            .iter()
+            .map(String::as_str)
+            .chain(self.assets.keys().map(String::as_str))
+    }
+
     /// The asset for a path, if this path is part of the UI at all.
     /// Anything that returns None belongs to the server and gets proxied.
     pub fn resolve(&self, path: &str) -> Option<&Asset> {
@@ -115,12 +130,30 @@ mod tests {
     #[test]
     fn manifest_parses_and_every_route_has_bytes() {
         let ui = Ui::load().expect("routes.json should parse and resolve");
-        for path in ["/", "/index.html", "/app.css", "/player.js", "/icon.svg"] {
+        let mut checked = 0;
+        for path in ui.routes() {
             let asset = ui
                 .resolve(path)
                 .unwrap_or_else(|| panic!("no asset for {path}"));
             assert!(!asset.body.is_empty(), "{path} resolved to zero bytes");
+            checked += 1;
         }
+        // A manifest that parsed but declared nothing would sail through the
+        // loop above without asserting anything at all.
+        assert!(
+            checked >= 5,
+            "only {checked} routes declared — is routes.json truncated?"
+        );
+    }
+
+    #[test]
+    fn the_document_is_reachable_under_both_of_its_urls() {
+        let ui = Ui::load().unwrap();
+        let root = ui.resolve("/").expect("/ must serve the document");
+        let explicit = ui
+            .resolve("/index.html")
+            .expect("/index.html must serve it too");
+        assert_eq!(root.body, explicit.body, "the two document URLs disagree");
     }
 
     #[test]
