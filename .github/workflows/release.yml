@@ -1,0 +1,109 @@
+name: release
+
+# Tag a version to ship it:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Builds every platform, signs the bundles with the updater key, and publishes
+# them to a GitHub Release together with latest.json -- which is the file the
+# running app polls to discover there is a newer version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist)'
+        required: true
+
+jobs:
+  release:
+    permissions:
+      contents: write # to create the release and upload bundles to it
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ''
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: recursive # the build embeds ui/public
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      # Ubuntu 22.04 rather than latest: the AppImage produced on a newer glibc
+      # refuses to start on anything older, and this is the oldest runner Tauri
+      # v2 still supports. Building on the newest available would quietly narrow
+      # who can run it.
+      - name: Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libxdo-dev libssl-dev
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate icons from the shared UI package
+        run: |
+          python -m pip install --quiet pillow
+          python scripts/make-icons.py
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is what makes the updater trust a download. Without these
+          # the bundles build fine and the update path is dead, which is a
+          # failure you would not notice until you shipped a second version.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'Homelab Music __VERSION__'
+          releaseBody: |
+            Install with one line — see the README for what each script does.
+
+            **macOS** (Apple Silicon or Intel; handles Gatekeeper for you)
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-macos.sh | bash
+            ```
+
+            **Linux** (AppImage)
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-linux.sh | bash
+            ```
+
+            **Windows** (PowerShell)
+            ```powershell
+            irm https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-windows.ps1 | iex
+            ```
+
+            Builds are unsigned — there is no Apple Developer ID and no Windows
+            code-signing certificate. The install scripts deal with what that
+            means on each platform. Once installed, the app updates itself from
+            the tray.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true # this is latest.json, which the app polls
+          args: ${{ matrix.args }}

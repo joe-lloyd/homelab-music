@@ -10,6 +10,7 @@
 mod netpath;
 mod proxy;
 mod routes;
+mod update;
 
 use std::sync::Arc;
 
@@ -82,6 +83,9 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(update::PendingUpdate::default())
         .register_asynchronous_uri_scheme_protocol("homelab", move |_ctx, request, responder| {
             let state = protocol_state.clone();
             tauri::async_runtime::spawn(async move {
@@ -106,6 +110,15 @@ fn main() {
             .build()?;
 
             build_tray(app)?;
+
+            // After the path is settled, not before: a check that races the
+            // LAN-vs-tunnel decision fails for the wrong reason and would
+            // report "could not check" on a perfectly healthy network.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                update::check(handle, false).await;
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -207,9 +220,12 @@ fn text(status: u16, message: &str) -> http::Response<Vec<u8>> {
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItemBuilder::with_id("show", "Show player").build(app)?;
+    let update_item = MenuItemBuilder::with_id("update", "Check for updates…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&show])
+        .separator()
+        .items(&[&update_item])
         .separator()
         .items(&[&quit])
         .build()?;
@@ -225,6 +241,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
+            }
+            // One item does both jobs: it checks when there is nothing
+            // waiting, and installs when a check has already found something.
+            // Two menu entries where one will do is just more to read.
+            "update" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if handle.state::<update::PendingUpdate>().is_pending() {
+                        update::install(handle).await;
+                    } else {
+                        update::check(handle, true).await;
+                    }
+                });
             }
             "quit" => app.exit(0),
             _ => {}

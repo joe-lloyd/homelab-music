@@ -28,6 +28,15 @@
     ],
     "category": "Music",
     "shortDescription": "Tray player for the home music library",
-    "longDescription": "Plays the home music library from the tray, over its own WireGuard tunnel when away from the LAN."
+    "longDescription": "Plays the home music library from the tray, over its own WireGuard tunnel when away from the LAN.",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/joe-lloyd/homelab-music/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFRUEzQzRERTM4RjI1MzkKUldRNUpZL2pUVHpxamdMZ29UVU5qZ05FVGs3MzcyTUdtQURpbjBaWmt4Q2VuUUZmVGkwWFNuTHIK"
+    }
   }
 }
