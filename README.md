@@ -95,23 +95,74 @@ python scripts/make-icons.py                                # after a ui/ bump
 macOS binaries cannot be cross-compiled from Windows or Linux — they're built
 by CI on a `macos-latest` runner, or on the Mac itself.
 
-## Running an unsigned build on macOS
+## Installing
 
-There's no Apple Developer ID behind this and there isn't going to be one — it's
-a personal app for one person's music. macOS will refuse it twice, for two
-different reasons. `scripts/macos-allow-unsigned.sh` answers both:
+One line per platform. Each script pulls the latest release, so it is the same
+command whether this is a first install or a reinstall.
+
+**macOS** — Apple Silicon or Intel, detected for you:
 
 ```sh
-./scripts/macos-allow-unsigned.sh                 # /Applications/Homelab Music.app
-./scripts/macos-allow-unsigned.sh ~/Downloads/Homelab\ Music.app
+curl -fsSL https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-macos.sh | bash
 ```
 
-It strips `com.apple.quarantine` (the cause of the misleading *"is damaged and
-can't be opened"*) and applies an **ad-hoc signature**, which Apple Silicon
-requires before the kernel will run an arm64 binary at all. It touches only the
-bundle you name — it does not disable Gatekeeper or change any system-wide
-policy. `spctl --assess` will still say "rejected" afterwards; that's the honest
-answer to *"is this notarised"*, and it isn't what stops the app running.
+**Linux** — AppImage into `~/.local/bin`, plus a desktop entry. No root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-linux.sh | bash
+```
+
+**Windows** — per-user install, no admin:
+
+```powershell
+irm https://raw.githubusercontent.com/joe-lloyd/homelab-music/main/scripts/install-windows.ps1 | iex
+```
+
+### Why the macOS script does two things
+
+There is no Apple Developer ID behind this and there is not going to be one —
+it is a personal app for one person's music. macOS therefore refuses it twice,
+for two unrelated reasons, and the installer answers both:
+
+- it strips `com.apple.quarantine`, the cause of the misleading *"is damaged and
+  can't be opened"*;
+- it applies an **ad-hoc signature**, because Apple Silicon will not run an
+  unsigned arm64 binary at all, regardless of Gatekeeper.
+
+It touches only the one bundle. Gatekeeper stays on and no system-wide policy
+changes. `spctl --assess` will still report "rejected" afterwards — that is the
+honest answer to *"is this notarised"*, and it is not what stops the app running.
+
+`scripts/macos-allow-unsigned.sh` still exists for a build you obtained some
+other way; the installer just folds the same steps in.
+
+## Updating
+
+The app updates itself. It checks once at startup and never installs on its
+own — finding an update posts a notification, and the tray installs it when you
+choose to. That is deliberate: installing means relaunching, and relaunching
+mid-album to save thirty seconds is a bad trade.
+
+A failed check stays quiet unless you asked for it from the tray. Away from home
+and outside the tunnel the app genuinely cannot reach GitHub, and that is an
+ordinary state rather than something worth interrupting you about.
+
+Worth knowing: Tauri's updater replaces the **whole bundle** rather than
+patching it. There is no delta mechanism. At 3–8 MB that costs less than the
+machinery to avoid it would.
+
+## Releasing
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+That builds macOS (both architectures), Linux and Windows, signs every bundle
+with the updater key, and publishes them with `latest.json` — the file running
+copies poll. The signing key lives in the repository's Actions secrets; the
+public half is in `tauri.conf.json`. **Without those secrets the bundles still
+build and the update path is silently dead**, which is a failure you would not
+notice until the second release.
 
 ## Status
 

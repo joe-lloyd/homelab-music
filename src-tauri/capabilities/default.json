@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the main window is allowed to ask the Rust side for. Deliberately narrow: the UI is the untouched web player, which knows nothing about Tauri and calls none of this. Only the updater is here, and only because the tray drives it.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

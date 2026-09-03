@@ -10,6 +10,7 @@
 mod netpath;
 mod proxy;
 mod routes;
+mod update;
 
 use std::sync::Arc;
 
@@ -82,6 +83,9 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(update::PendingUpdate::default())
         .register_asynchronous_uri_scheme_protocol("homelab", move |_ctx, request, responder| {
             let state = protocol_state.clone();
             tauri::async_runtime::spawn(async move {
@@ -106,6 +110,15 @@ fn main() {
             .build()?;
 
             build_tray(app)?;
+
+            // After the path is settled, not before: a check that races the
+            // LAN-vs-tunnel decision fails for the wrong reason and would
+            // report "could not check" on a perfectly healthy network.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                update::check(handle, false).await;
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -139,6 +152,25 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
             .expect("static response is well-formed");
     }
 
+    // Client-side routes are real paths now, so /album/<id> is not an asset and
+    // is not the server's either -- it is the app's. Serve the document from
+    // embedded bytes and let the router take it.
+    //
+    // Doing this here rather than letting it fall through to the proxy matters:
+    // the server would answer with the same document, but only after a round
+    // trip over the tunnel, so every in-app navigation to an unvisited route
+    // would wait on the network for a page we are already holding.
+    if is_client_route(&path) {
+        if let Some(document) = state.ui.resolve("/") {
+            return http::Response::builder()
+                .status(200)
+                .header("content-type", document.content_type.clone())
+                .header("cache-control", document.cache_control.clone())
+                .body(document.body.to_vec())
+                .expect("document response is well-formed");
+        }
+    }
+
     // Everything else is the server's: /api/*, /img/*, and anything added later.
     let proxy = { state.proxy.read().await.clone() };
     let Some(proxy) = proxy else {
@@ -167,6 +199,17 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
     }
 }
 
+/// Is this a path the app's own router should answer?
+///
+/// Scoped by exclusion, matching what music-dump's server does, because the
+/// route table lives in TypeScript in the UI package and neither consumer can
+/// import it. Anything under /api or /img belongs to the server -- a mistyped
+/// endpoint must keep its honest 404 rather than being answered with a page --
+/// and anything else is the app's.
+fn is_client_route(path: &str) -> bool {
+    !path.starts_with("/api/") && !path.starts_with("/img/")
+}
+
 fn text(status: u16, message: &str) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .status(status)
@@ -177,9 +220,12 @@ fn text(status: u16, message: &str) -> http::Response<Vec<u8>> {
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItemBuilder::with_id("show", "Show player").build(app)?;
+    let update_item = MenuItemBuilder::with_id("update", "Check for updates…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&show])
+        .separator()
+        .items(&[&update_item])
         .separator()
         .items(&[&quit])
         .build()?;
@@ -196,10 +242,54 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = w.set_focus();
                 }
             }
+            // One item does both jobs: it checks when there is nothing
+            // waiting, and installs when a check has already found something.
+            // Two menu entries where one will do is just more to read.
+            "update" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if handle.state::<update::PendingUpdate>().is_pending() {
+                        update::install(handle).await;
+                    } else {
+                        update::check(handle, true).await;
+                    }
+                });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_client_route;
+
+    #[test]
+    fn app_routes_are_the_apps() {
+        for path in [
+            "/",
+            "/artists",
+            "/album/4aawyAB9vmqN3uQ7FjRGTy",
+            "/radio/artist/Converge",
+        ] {
+            assert!(is_client_route(path), "{path} should route in the app");
+        }
+    }
+
+    #[test]
+    fn server_paths_keep_their_honest_404() {
+        // If these were treated as client routes, a mistyped endpoint would
+        // answer 200 with a page and the caller would parse HTML as JSON.
+        for path in [
+            "/api/overview",
+            "/api/nonsense",
+            "/img/folder",
+            "/img/albums/x.jpg",
+        ] {
+            assert!(!is_client_route(path), "{path} belongs to the server");
+        }
+    }
 }
