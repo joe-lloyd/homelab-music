@@ -1,0 +1,108 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The Rust unit tests -- manifest parsing, header handling, CA validity --
+    # are platform-independent, so run them once on the cheapest runner rather
+    # than three times across the matrix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # the build embeds ui/public; without it, nothing compiles
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Linux WebKit dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Test the shared UI package's own contract
+        run: node --test test/*.test.js
+        working-directory: ui
+
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+  bundle:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate icons from the shared UI package
+        run: |
+          python -m pip install --quiet pillow
+          python scripts/make-icons.py
+
+      # macOS needs a .icns, which scripts/make-icons.py deliberately does not
+      # produce -- iconutil only exists here. Built from the PNG the script did
+      # produce, so it is still the same mark as the web and phone apps.
+      - name: Build icon.icns
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          ICONSET=/tmp/icon.iconset
+          mkdir -p "$ICONSET"
+          for s in 16 32 128 256 512; do
+            sips -z $s $s src-tauri/icons/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+            sips -z $((s*2)) $((s*2)) src-tauri/icons/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Bundle
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      # Unsigned on purpose: there is no Apple Developer ID and no Windows
+      # code-signing certificate. On macOS, run scripts/macos-allow-unsigned.sh
+      # after downloading -- see the README.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homelab-music-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe

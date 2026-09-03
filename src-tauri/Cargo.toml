@@ -1,0 +1,42 @@
+[package]
+name = "homelab-music"
+version = "0.1.0"
+description = "Tray player for the home music library, with its own WireGuard tunnel"
+edition = "2021"
+rust-version = "1.77"
+license = "UNLICENSED"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+# rustls with manual roots: the homelab CA is the only root we add, and we do
+# not want the OS trust store deciding anything about *.home.arpa.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls-manual-roots", "stream", "http2", "charset",
+] }
+futures-util = "0.3"
+http = "1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+include_dir = "0.7"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[features]
+# Tauri's own default; kept explicit so `cargo build` and `cargo tauri build`
+# do not silently disagree about custom-protocol handling.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
