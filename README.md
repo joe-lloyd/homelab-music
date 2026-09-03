@@ -171,7 +171,7 @@ notice until the second release.
 | | |
 |---|---|
 | Tray, window, close-to-tray | done |
-| Embedded UI from the shared package | done |
+| Embedded UI from the shared package | done — React + TypeScript since 0.2.0 |
 | Reverse proxy, CA pinning, Range passthrough | done |
 | Home-vs-away detection | done |
 | Userspace WireGuard tunnel | **next** |
