@@ -74,21 +74,6 @@ jobs:
           python -m pip install --quiet pillow
           python scripts/make-icons.py
 
-      # macOS needs a .icns, which scripts/make-icons.py deliberately does not
-      # produce -- iconutil only exists here. Built from the PNG the script did
-      # produce, so it is still the same mark as the web and phone apps.
-      - name: Build icon.icns
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          ICONSET=/tmp/icon.iconset
-          mkdir -p "$ICONSET"
-          for s in 16 32 128 256 512; do
-            sips -z $s $s src-tauri/icons/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-            sips -z $((s*2)) $((s*2)) src-tauri/icons/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-          done
-          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
-
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 

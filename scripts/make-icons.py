@@ -11,12 +11,16 @@ file, not hardcoded here, so a colour change in the UI package still lands.
 
     python scripts/make-icons.py
 
-Regenerate whenever ui/ is bumped and the icon changed. macOS .icns is not
-produced here: it needs a Mac (or `cargo tauri icon`), and CI makes it there.
+Regenerate whenever ui/ is bumped and the icon changed. This includes the macOS
+.icns, which is written directly rather than shelled out to `iconutil` -- that
+only exists on a Mac, and needing a Mac to produce an icon would mean the Mac
+bundle could never be built anywhere else, including CI's own checkout.
 """
 
+import io
 import pathlib
 import re
+import struct
 import sys
 
 from PIL import Image, ImageDraw
@@ -35,6 +39,19 @@ PNG_SIZES = {
     "icon.png": 1024,
 }
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+# The .icns entries Tauri's bundler looks for, as (OSType, pixel size). All of
+# these accept a PNG payload, which is what makes writing the container here
+# rather than via iconutil practical.
+ICNS_ENTRIES = [
+    (b"ic07", 128),
+    (b"ic08", 256),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+    (b"ic11", 32),
+    (b"ic12", 64),
+    (b"ic13", 256),
+    (b"ic14", 512),
+]
 # Supersampling factor. Circles this small alias badly without it.
 SS = 8
 
@@ -68,6 +85,25 @@ def render(size, background, circles):
     return img.resize((size, size), Image.LANCZOS)
 
 
+def write_icns(path, background, circles):
+    """Write a macOS .icns without iconutil.
+
+    The format is plainer than its reputation: the magic 'icns', the total
+    file length, then one record per icon of OSType, record length (counting
+    its own 8-byte header) and payload. Every OSType used here takes a PNG
+    payload directly, so there is no Apple-specific packing to reproduce.
+    Both integers are big-endian.
+    """
+    records = bytearray()
+    for ostype, size in ICNS_ENTRIES:
+        buf = io.BytesIO()
+        render(size, background, circles).save(buf, format="PNG")
+        payload = buf.getvalue()
+        records += struct.pack(">4sI", ostype, len(payload) + 8) + payload
+
+    path.write_bytes(b"icns" + struct.pack(">I", len(records) + 8) + bytes(records))
+
+
 def main():
     if not SVG.exists():
         sys.exit(f"{SVG} is missing -- is the ui/ submodule initialised?")
@@ -82,8 +118,11 @@ def main():
         OUT / "icon.ico", sizes=[(s, s) for s in ICO_SIZES]
     )
     print(f"  icon.ico ({', '.join(str(s) for s in ICO_SIZES)})")
-    print(f"\nWrote {len(PNG_SIZES) + 1} files to {OUT}")
-    print("macOS .icns is generated on the Mac runner; see .github/workflows.")
+
+    write_icns(OUT / "icon.icns", background, circles)
+    print(f"  icon.icns ({len(ICNS_ENTRIES)} entries)")
+
+    print(f"\nWrote {len(PNG_SIZES) + 2} files to {OUT}")
 
 
 if __name__ == "__main__":
