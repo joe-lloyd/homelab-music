@@ -139,6 +139,25 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
             .expect("static response is well-formed");
     }
 
+    // Client-side routes are real paths now, so /album/<id> is not an asset and
+    // is not the server's either -- it is the app's. Serve the document from
+    // embedded bytes and let the router take it.
+    //
+    // Doing this here rather than letting it fall through to the proxy matters:
+    // the server would answer with the same document, but only after a round
+    // trip over the tunnel, so every in-app navigation to an unvisited route
+    // would wait on the network for a page we are already holding.
+    if is_client_route(&path) {
+        if let Some(document) = state.ui.resolve("/") {
+            return http::Response::builder()
+                .status(200)
+                .header("content-type", document.content_type.clone())
+                .header("cache-control", document.cache_control.clone())
+                .body(document.body.to_vec())
+                .expect("document response is well-formed");
+        }
+    }
+
     // Everything else is the server's: /api/*, /img/*, and anything added later.
     let proxy = { state.proxy.read().await.clone() };
     let Some(proxy) = proxy else {
@@ -165,6 +184,17 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
             text(502, &format!("Could not reach home: {e}"))
         }
     }
+}
+
+/// Is this a path the app's own router should answer?
+///
+/// Scoped by exclusion, matching what music-dump's server does, because the
+/// route table lives in TypeScript in the UI package and neither consumer can
+/// import it. Anything under /api or /img belongs to the server -- a mistyped
+/// endpoint must keep its honest 404 rather than being answered with a page --
+/// and anything else is the app's.
+fn is_client_route(path: &str) -> bool {
+    !path.starts_with("/api/") && !path.starts_with("/img/")
 }
 
 fn text(status: u16, message: &str) -> http::Response<Vec<u8>> {
@@ -202,4 +232,35 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_client_route;
+
+    #[test]
+    fn app_routes_are_the_apps() {
+        for path in [
+            "/",
+            "/artists",
+            "/album/4aawyAB9vmqN3uQ7FjRGTy",
+            "/radio/artist/Converge",
+        ] {
+            assert!(is_client_route(path), "{path} should route in the app");
+        }
+    }
+
+    #[test]
+    fn server_paths_keep_their_honest_404() {
+        // If these were treated as client routes, a mistyped endpoint would
+        // answer 200 with a page and the caller would parse HTML as JSON.
+        for path in [
+            "/api/overview",
+            "/api/nonsense",
+            "/img/folder",
+            "/img/albums/x.jpg",
+        ] {
+            assert!(!is_client_route(path), "{path} belongs to the server");
+        }
+    }
 }
