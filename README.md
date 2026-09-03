@@ -148,8 +148,10 @@ and outside the tunnel the app genuinely cannot reach GitHub, and that is an
 ordinary state rather than something worth interrupting you about.
 
 Worth knowing: Tauri's updater replaces the **whole bundle** rather than
-patching it. There is no delta mechanism. At 3–8 MB that costs less than the
-machinery to avoid it would.
+patching it. There is no delta mechanism. The macOS and Windows bundles are
+3–5 MB, so that costs less than the machinery to avoid it would. The Linux
+AppImage is ~79 MB because it carries its own WebKit; if that becomes annoying,
+the `.deb` is 5 MB and uses the system one.
 
 ## Releasing
 

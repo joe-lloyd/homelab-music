@@ -21,6 +21,13 @@ jobs:
       contents: write # to create the release and upload bundles to it
     strategy:
       fail-fast: false
+      # One at a time, deliberately. Every job appends its platform to the same
+      # latest.json on the same release, so running them together means one job
+      # deleting that asset while another updates it -- which fails with a bare
+      # "Not Found" after its own bundles have already uploaded. The release
+      # then looks complete while silently missing a platform from the updater
+      # manifest, so that platform installs fine and never updates again.
+      max-parallel: 1
       matrix:
         include:
           - os: macos-latest
