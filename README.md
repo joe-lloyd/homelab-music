@@ -174,8 +174,38 @@ notice until the second release.
 | Embedded UI from the shared package | done — React + TypeScript since 0.2.0 |
 | Reverse proxy, CA pinning, Range passthrough | done |
 | Home-vs-away detection | done |
+| Embedded-UI drift check | done — 0.3.0 |
 | Userspace WireGuard tunnel | **next** |
 | Media keys, now-playing, notifications | **next** |
+
+### Knowing the embedded UI has gone stale
+
+The UI is compiled in, which is deliberate (see above) and has one cost: this
+app ships a *snapshot* of a repo that moves on its own. Push to music-ui,
+deploy music-dump, and the web app has the new front end while this one keeps
+serving whatever it was last built with. There is no symptom — the app works,
+it is just older than the server it is talking to.
+
+So it asks. music-dump serves `GET /api/ui-build`, a sha256 over the files it
+serves; `Ui::digest()` computes the same hash over the files embedded here. At
+startup, once the network path is settled, `uicheck` compares them and logs the
+answer; a genuine mismatch also raises one notification, because the fix is a
+rebuild and nothing at runtime can do it.
+
+Being unable to check is reported as `Unknown`, never as stale — offline, mid
+tunnel, or an older server with no such endpoint are all "cannot tell", and
+crying stale over a dropped network would train you to ignore the one that
+matters.
+
+The hash rule is a cross-language contract: file name then bytes, in basename
+order. `uicheck`'s tests pin the digest of the current bundle so a change to
+the rule fails here rather than silently reporting every build as out of date,
+and a `--ignored` test checks it against the live server on the home LAN.
+
+Bumping the `ui/` submodule is automated from the other side: music-ui's
+`bump-consumers` workflow opens a PR here on every push that changes what this
+app vendors. Merging it is not shipping it — the UI is in the binary, so a
+release build has to follow.
 
 The tunnel is the interesting remaining piece: `onetun`-style userspace
 WireGuard (`boringtun` + `smoltcp`), no TUN device, no driver, no admin rights,

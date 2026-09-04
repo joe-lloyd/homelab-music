@@ -1,6 +1,6 @@
 [package]
 name = "homelab-music"
-version = "0.2.1"
+version = "0.3.0"
 description = "Tray player for the home music library, with its own WireGuard tunnel"
 edition = "2021"
 rust-version = "1.77"
@@ -29,6 +29,9 @@ http = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 include_dir = "0.7"
+# Only for the UI drift digest; the same hash music-dump computes over the
+# files it serves, so the two can be compared without a version stamp.
+sha2 = "0.10"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 /// The UI assets, baked into the binary. Nothing is read from disk at runtime,
 /// so a user cannot end up with a half-updated app after moving files around.
@@ -53,6 +54,9 @@ pub struct Ui {
     document_urls: Vec<String>,
     assets: HashMap<String, Asset>,
     document: Asset,
+    /// (file name, bytes) for every file the manifest names. Kept for digest()
+    /// only -- serving goes through `assets`, which is keyed by URL.
+    files: Vec<(String, &'static [u8])>,
 }
 
 impl Ui {
@@ -73,6 +77,12 @@ impl Ui {
             })
         };
 
+        // The base name is what both hosts can agree on: music-dump resolves
+        // these to absolute paths inside a checkout, we resolve them inside an
+        // embedded directory, and only the file name survives both.
+        let base = |rel: &str| -> String { rel.rsplit('/').next().unwrap_or(rel).to_owned() };
+        let mut files = vec![(base(&raw.document.file), bytes(&raw.document.file)?)];
+
         let document = Asset {
             body: bytes(&raw.document.file)?,
             content_type: raw.document.content_type,
@@ -81,6 +91,7 @@ impl Ui {
 
         let mut assets = HashMap::new();
         for (url, entry) in raw.statics {
+            files.push((base(&entry.file), bytes(&entry.file)?));
             assets.insert(
                 url,
                 Asset {
@@ -95,6 +106,7 @@ impl Ui {
             document_urls: raw.document.urls,
             assets,
             document,
+            files,
         })
     }
 
@@ -111,6 +123,24 @@ impl Ui {
             .iter()
             .map(String::as_str)
             .chain(self.assets.keys().map(String::as_str))
+    }
+
+    /// The identity of the UI embedded in this binary.
+    ///
+    /// Must stay byte-for-byte agreeable with music-dump's `uiDigest()`:
+    /// sha256 over each file's NAME then its BYTES, in name order. A digest
+    /// rather than a version string because the desktop embeds its UI at
+    /// compile time -- there is no release step that could be trusted to bump
+    /// a number, but the bytes cannot lie about what was baked in.
+    pub fn digest(&self) -> String {
+        let mut files: Vec<&(String, &'static [u8])> = self.files.iter().collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut hash = Sha256::new();
+        for (name, body) in files {
+            hash.update(name.as_bytes());
+            hash.update(body);
+        }
+        format!("{:x}", hash.finalize())
     }
 
     /// The asset for a path, if this path is part of the UI at all.

@@ -10,6 +10,7 @@
 mod netpath;
 mod proxy;
 mod routes;
+mod uicheck;
 mod update;
 
 use std::sync::Arc;
@@ -117,6 +118,28 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 update::check(handle, false).await;
+            });
+
+            // Same reasoning, same moment: ask home whether the UI we embedded
+            // is still the one it serves. Only a genuine mismatch is worth
+            // interrupting anyone over -- being offline is not news, and the
+            // fix for a real mismatch is a rebuild, which cannot happen here.
+            let drift_handle = app.handle().clone();
+            let drift_state = setup_state.clone();
+            tauri::async_runtime::spawn(async move {
+                let proxy = { drift_state.proxy.read().await.clone() };
+                let Some(proxy) = proxy else { return };
+                let drift = uicheck::check(proxy, &drift_state.ui.digest()).await;
+                uicheck::report(&drift);
+                if let uicheck::Drift::Stale { .. } = drift {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = drift_handle
+                        .notification()
+                        .builder()
+                        .title("Music UI is out of date")
+                        .body("This build embeds an older front end than home is serving. Rebuild to pick it up.")
+                        .show();
+                }
             });
 
             Ok(())
