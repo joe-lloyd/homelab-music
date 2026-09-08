@@ -87,12 +87,11 @@ impl Proxy {
 
     /// Forward one request to music.home.arpa and return what came back.
     ///
-    /// The body is collected rather than streamed. That is a real tradeoff and
-    /// worth stating: `<audio>` fetches with Range headers, so in practice each
-    /// response here is a bounded chunk, not a whole 40 MB FLAC. A request that
-    /// arrives with no Range will buffer the entire file -- correct, just not
-    /// free. If that shows up as a memory spike on long tracks, this is the
-    /// function to make streaming.
+    /// The body is collected rather than streamed, because the custom-scheme
+    /// responder we answer through takes a finished `Vec<u8>` and gives us no
+    /// way to hand back a stream. So the only way to keep a response small is
+    /// to make sure we never ASK for a big one -- see `cap_range`, which is
+    /// what makes "collected" affordable rather than ruinous.
     pub async fn forward(
         &self,
         method: &str,
@@ -146,7 +145,58 @@ pub fn sanitise(headers: &HeaderMap) -> HeaderMap {
             out.insert(n, value.clone());
         }
     }
+    cap_range(&mut out);
     out
+}
+
+/// How much of a track to fetch per upstream request.
+///
+/// Big enough that a FLAC does not turn into a request storm (4 MiB is the
+/// better part of a minute of 24/48 audio), small enough that the first bytes
+/// reach the player promptly. Nothing here depends on the exact figure.
+const RANGE_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// Bound an open-ended `Range` so one response cannot be a whole album track.
+///
+/// WebView2 does not ask for a window, it asks for `bytes=N-` -- everything
+/// from here to the end of the file. Since `forward` has to collect the whole
+/// body before it can answer, an open-ended range means downloading the entire
+/// remainder of a 90 MB FLAC before the player is given a single byte, and
+/// re-downloading it from a new offset every time the media pipeline re-seeks.
+/// Measured against the real library that was 627 MB of transfer for six
+/// tracks, with 2.5-4.3 s of silence at every track boundary -- which is
+/// exactly when `next()` needs the audio element to be responsive.
+///
+/// Turning `bytes=N-` into `bytes=N-(N+CHUNK-1)` is an ordinary, honest HTTP
+/// request: the server answers 206 with a `Content-Range` naming the true
+/// total size, so the player learns the real duration and simply asks for the
+/// next window when it needs it. Ranges that already name an end are left
+/// alone -- the caller has said what it wants -- and so is a request with no
+/// `Range` at all, which is how every JSON and image fetch stays untouched.
+fn cap_range(headers: &mut HeaderMap) {
+    let Some(start) = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(open_ended_start)
+    else {
+        return;
+    };
+    let end = start.saturating_add(RANGE_CHUNK - 1);
+    if let Ok(value) = HeaderValue::from_str(&format!("bytes={start}-{end}")) {
+        headers.insert("range", value);
+    }
+}
+
+/// The start offset of a `bytes=N-` header, or None if it is anything else.
+fn open_ended_start(value: &str) -> Option<u64> {
+    let spec = value.trim().strip_prefix("bytes=")?;
+    // A multi-range request ("bytes=0-99,200-") is a different response shape
+    // (multipart/byteranges) and not something to rewrite behind the caller.
+    if spec.contains(',') {
+        return None;
+    }
+    let start = spec.strip_suffix('-')?;
+    start.parse().ok()
 }
 
 #[cfg(test)]
@@ -175,6 +225,66 @@ mod tests {
             Some("bytes=0-1023"),
             "Range must survive -- seeking depends on it",
         );
+    }
+
+    /// The whole point of cap_range: an open-ended range is what WebView2
+    /// actually sends for every audio request, and answering it literally
+    /// means buffering the rest of the file before the player hears anything.
+    #[test]
+    fn an_open_ended_range_is_bounded_to_one_chunk() {
+        let mut h = HeaderMap::new();
+        h.insert("range", HeaderValue::from_static("bytes=0-"));
+        let out = sanitise(&h);
+        assert_eq!(
+            out.get("range").unwrap().to_str().unwrap(),
+            format!("bytes=0-{}", RANGE_CHUNK - 1),
+            "bytes=0- must not be forwarded as-is",
+        );
+    }
+
+    #[test]
+    fn capping_starts_from_the_offset_the_player_asked_for() {
+        let mut h = HeaderMap::new();
+        h.insert("range", HeaderValue::from_static("bytes=5570560-"));
+        let out = sanitise(&h);
+        assert_eq!(
+            out.get("range").unwrap().to_str().unwrap(),
+            format!("bytes=5570560-{}", 5570560 + RANGE_CHUNK - 1),
+        );
+    }
+
+    /// Seeking sends a bounded range already. Rewriting it would narrow a
+    /// window the caller deliberately chose.
+    #[test]
+    fn a_range_that_already_names_an_end_is_left_alone() {
+        let mut h = HeaderMap::new();
+        h.insert("range", HeaderValue::from_static("bytes=0-1023"));
+        let out = sanitise(&h);
+        assert_eq!(out.get("range").unwrap().to_str().unwrap(), "bytes=0-1023");
+    }
+
+    /// Every JSON and image fetch goes through here too, and none of them
+    /// should acquire a Range header they never asked for.
+    #[test]
+    fn a_request_with_no_range_does_not_gain_one() {
+        let h = HeaderMap::new();
+        assert!(sanitise(&h).get("range").is_none());
+    }
+
+    /// A multi-range request answers as multipart/byteranges. Rewriting it to
+    /// a single window would change the response shape under the caller.
+    #[test]
+    fn multi_range_and_suffix_requests_are_not_rewritten() {
+        for raw in ["bytes=0-99,200-", "bytes=-500"] {
+            let mut h = HeaderMap::new();
+            h.insert("range", HeaderValue::from_str(raw).unwrap());
+            let out = sanitise(&h);
+            assert_eq!(
+                out.get("range").unwrap().to_str().unwrap(),
+                raw,
+                "{raw} should pass through untouched",
+            );
+        }
     }
 
     #[test]

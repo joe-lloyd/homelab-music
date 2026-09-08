@@ -1,0 +1,87 @@
+# What the homelab builds for this repo, and where.
+#
+# GitHub Actions is a doorbell here, not a build system: .github/workflows/
+# signs a payload and hands the work to https://builds.home.arpa, which runs it
+# on hardware we own. See homelab-task-runner for the control plane.
+#
+# Three things this repo breaks on if they are not explicit:
+#
+# 1. The UI is a **submodule at `ui/`**, and the binary embeds `ui/public` at
+#    compile time. A checkout without it does not fail -- `include_dir!` on an
+#    empty directory produces a build that succeeds and an app with no UI. The
+#    sanity step below is there because that failure is silent.
+# 2. This is a Cargo workspace under `src-tauri/`, not an npm project. There is
+#    no root package.json; every cargo command needs --manifest-path.
+# 3. Bundling requires the updater signing key. Tauri refuses to finish a bundle
+#    when tauri.conf.json names a public key and no private key is present, so
+#    the unsigned CI path builds with --no-bundle and the signed bundles live in
+#    the release pipelines, which declare `secrets:`.
+
+version: 1
+
+pipelines:
+  # The every-push path. No secrets, no bundles, nothing to publish -- just the
+  # question "does this still build and pass its tests", answered on eliot.
+  ci:
+    runs_on: [linux, docker]
+    image: desktop-build:1
+    timeout: 2700
+    concurrency: homelab-music-ci
+    cache: [cargo, npm]
+    submodules: true
+    min_free_gb: 25
+    steps:
+      - name: submodule-sanity
+        run: |
+          # An empty ui/ compiles clean and ships an app with no interface.
+          # Fail here, loudly, rather than there, silently.
+          test -f ui/routes.json && test -s ui/public/app.js || {
+            echo "ui/ did not check out: no routes.json, or public/app.js is empty."
+            echo "This build would produce an app with no UI."
+            exit 1
+          }
+
+      - name: ui-contract
+        working_dir: ui
+        run: node --test test/*.test.js
+
+      - name: fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Proves it links against the real WebKit stack, which `cargo test` does
+      # not. --no-bundle because bundling would demand the signing key for a
+      # binary this pipeline throws away.
+      - name: compile
+        run: |
+          python3 scripts/make-icons.py
+          cargo tauri build --no-bundle
+
+  # The same question for macOS, which no Linux runner can answer. old-mac is
+  # an Intel i9, so aarch64 is a real cross-compile rather than the free ride it
+  # gets on GitHub's arm64 hosts -- both targets are named explicitly.
+  ci-macos:
+    runs_on: [macos]
+    timeout: 3600
+    concurrency: homelab-music-ci-macos
+    cache: [cargo]
+    submodules: true
+    min_free_gb: 25
+    steps:
+      - name: submodule-sanity
+        run: |
+          test -f ui/routes.json && test -s ui/public/app.js || {
+            echo "ui/ did not check out; this build would have no UI."
+            exit 1
+          }
+      - name: test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: compile-x86_64
+        run: cargo tauri build --no-bundle --target x86_64-apple-darwin
+      - name: compile-aarch64
+        run: cargo tauri build --no-bundle --target aarch64-apple-darwin

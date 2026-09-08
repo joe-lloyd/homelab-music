@@ -1,0 +1,112 @@
+# The doorbell. This workflow does not build anything.
+#
+# It signs a payload and hands the build to the homelab's own control plane at
+# https://builds.home.arpa, which runs it on hardware we own: Linux on eliot,
+# macOS on old-mac. Logs and artifacts live there, not here.
+#
+# Why Forgejo Actions rather than GitHub Actions: this runner is ON THE LAN and
+# can reach builds.home.arpa directly. The GitHub path has to bounce through an
+# n8n relay over the Cloudflare tunnel, because a GitHub-hosted runner cannot
+# resolve *.home.arpa -- see triggers/github/dispatch-to-homelab.yml in
+# homelab-task-runner. One less moving part, and the HMAC never leaves the LAN.
+#
+# The signature is computed here over the exact bytes that get POSTed, and the
+# control plane decides trust from the ref rather than from anything the payload
+# claims -- so this cannot mint a trusted build from an untrusted branch.
+#
+# Required secret:
+#   CONDUCTOR_HMAC   the value in /etc/homelab/conductor/trigger-hmac on pi-server
+
+name: homelab build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pipeline:
+        description: pipeline to run (ci, ci-macos)
+        required: true
+        default: ci
+
+jobs:
+  dispatch:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # The pipeline spec is the only file this job reads. Submodules are
+          # the build's problem, on the agent, not the doorbell's.
+          submodules: false
+
+      - name: Ring the doorbell
+        env:
+          CONDUCTOR_HMAC: ${{ secrets.CONDUCTOR_HMAC }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PIPELINE: ${{ inputs.pipeline }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const crypto = require('crypto');
+
+          const secret = process.env.CONDUCTOR_HMAC;
+          if (!secret) {
+            console.error('CONDUCTOR_HMAC is not set; the build was NOT queued.');
+            process.exit(1);
+          }
+
+          const yaml = fs.readFileSync('.homelab/pipeline.yml', 'utf8');
+          const ref = process.env.REF || '';
+
+          // macOS has exactly one agent and it is a 2019 laptop, so it is not
+          // asked to re-prove every pull request. Trunk and tags only.
+          const pipelines = process.env.INPUT_PIPELINE
+            ? [process.env.INPUT_PIPELINE]
+            : (ref === 'refs/heads/main' || ref.startsWith('refs/tags/'))
+              ? ['ci', 'ci-macos']
+              : ['ci'];
+
+          const post = async (pipeline) => {
+            const body = Buffer.from(JSON.stringify({
+              repo: 'homelab-music',
+              pipeline,
+              pipeline_yaml: yaml,
+              ref,
+              commit_sha: process.env.SHA || '',
+              trigger: 'forgejo-actions',
+            }));
+            const ts = String(Math.floor(Date.now() / 1000));
+            const mac = crypto.createHmac('sha256', secret);
+            mac.update(ts); mac.update('.'); mac.update(body);
+
+            const res = await fetch('https://builds.home.arpa/api/v1/triggers/dispatch', {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'X-Conductor-Timestamp': ts,
+                'X-Conductor-Signature': 'sha256=' + mac.digest('hex'),
+              },
+              body,
+            });
+            const text = await res.text();
+            console.log(`${pipeline}: ${res.status} ${text}`);
+            // A control plane that is down must not silently swallow a build.
+            if (!res.ok) {
+              throw new Error(
+                `${pipeline} was NOT queued (${res.status}). ` +
+                `Fallback from the Mac: conductorctl run homelab-music ${pipeline} --ref ${ref}`,
+              );
+            }
+          };
+
+          (async () => {
+            for (const p of pipelines) await post(p);
+            console.log('\nQueued on the homelab runner.');
+            console.log('Logs and artifacts: https://builds.home.arpa (LAN or wg0 only)');
+          })().catch((e) => { console.error(String(e.message || e)); process.exit(1); });
+          JS
