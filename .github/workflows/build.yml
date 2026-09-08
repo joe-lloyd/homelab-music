@@ -87,6 +87,15 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Bundle
+        # The signing key is not optional here, even though nothing is
+        # published from this workflow. tauri.conf.json names an updater
+        # public key, and Tauri refuses to finish a bundle when it finds one
+        # with no private key to match -- so without these every bundle job
+        # built its artifacts and then exited 1 on the very last step. That is
+        # why this workflow had never once gone green since 0.2.0.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --target ${{ matrix.target }}
 
       # Unsigned on purpose: there is no Apple Developer ID and no Windows
