@@ -133,14 +133,7 @@ impl Ui {
     /// compile time -- there is no release step that could be trusted to bump
     /// a number, but the bytes cannot lie about what was baked in.
     pub fn digest(&self) -> String {
-        let mut files: Vec<&(String, &'static [u8])> = self.files.iter().collect();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut hash = Sha256::new();
-        for (name, body) in files {
-            hash.update(name.as_bytes());
-            hash.update(body);
-        }
-        format!("{:x}", hash.finalize())
+        digest_files(self.files.iter().map(|(name, body)| (name.as_str(), *body)))
     }
 
     /// The asset for a path, if this path is part of the UI at all.
@@ -151,6 +144,25 @@ impl Ui {
         }
         self.assets.get(path)
     }
+}
+
+/// The hashing RULE, separated from the bundle it is applied to.
+///
+/// sha256 over each file's NAME then its BYTES, in name order. This is a
+/// cross-language contract with music-dump's `uiDigest()`, so the rule is what
+/// has to stay fixed -- ordering, whether the name is mixed in, which files
+/// are covered. Pulled out of `digest()` so a test can pin it against a
+/// fixture that never changes, rather than against whatever the ui/ submodule
+/// happens to contain today.
+pub fn digest_files<'a>(files: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
+    let mut files: Vec<(&str, &[u8])> = files.collect();
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    let mut hash = Sha256::new();
+    for (name, body) in files {
+        hash.update(name.as_bytes());
+        hash.update(body);
+    }
+    format!("{:x}", hash.finalize())
 }
 
 #[cfg(test)]
