@@ -149,16 +149,54 @@ mod tests {
 mod crosscheck {
     use crate::routes::Ui;
 
-    /// The digest is a CROSS-LANGUAGE contract with music-dump's `uiDigest()`.
-    /// Pinning it here means a change to the hashing rule -- ordering, whether
-    /// the file name is mixed in, which files are covered -- fails loudly on
-    /// this side instead of silently reporting every build as out of date.
-    /// Recompute with the snippet in music-dump's README if the bundle changes.
+    /// The digest is a CROSS-LANGUAGE contract with music-dump's `uiDigest()`,
+    /// so what has to stay fixed is the RULE: sha256 over each file's name
+    /// then its bytes, in name order.
+    ///
+    /// Pinned against a fixture rather than against the real bundle. The old
+    /// version asserted the digest of whatever `ui/` currently held, which
+    /// meant every submodule bump broke it -- and those bumps are opened
+    /// automatically, so the failing check was guaranteed and therefore
+    /// worthless. A fixture pins the same rule and never goes stale.
+    ///
+    /// The expected value is what music-dump's implementation produces for
+    /// this input:
+    ///
+    ///     const h = createHash('sha256');
+    ///     for (const [n, b] of [['a.css','one'], ['b.js','two']].sort())
+    ///       { h.update(n); h.update(Buffer.from(b)); }
+    ///     h.digest('hex');
     #[test]
-    fn matches_the_digest_computed_independently_over_the_same_bundle() {
+    fn the_hashing_rule_matches_the_other_implementation() {
+        let files: Vec<(&str, &[u8])> = vec![("b.js", b"two"), ("a.css", b"one")];
         assert_eq!(
-            Ui::load().unwrap().digest(),
-            "d9ab4e2816bd3e2d8e7e57f7e7a8d00628d57d9c1d2b50dfbc5f6c5183868f27",
+            crate::routes::digest_files(files.into_iter()),
+            "8d99b1fe80afd0d2ace636d8e4dc04d9f9ec27ff6804f833ae4416e00e749626",
+        );
+    }
+
+    /// Name order, not insertion order. Two bundles with the same files must
+    /// hash the same however the manifest happened to list them.
+    #[test]
+    fn ordering_is_by_name_not_by_insertion() {
+        let one: Vec<(&str, &[u8])> = vec![("a.css", b"one"), ("b.js", b"two")];
+        let other: Vec<(&str, &[u8])> = vec![("b.js", b"two"), ("a.css", b"one")];
+        assert_eq!(
+            crate::routes::digest_files(one.into_iter()),
+            crate::routes::digest_files(other.into_iter()),
+        );
+    }
+
+    /// The name is mixed in, not just the bytes. Renaming a file must change
+    /// the digest, or a bundle that moved app.js to app2.js would read as
+    /// current.
+    #[test]
+    fn the_file_name_is_part_of_the_hash() {
+        let before: Vec<(&str, &[u8])> = vec![("a.css", b"one")];
+        let after: Vec<(&str, &[u8])> = vec![("renamed.css", b"one")];
+        assert_ne!(
+            crate::routes::digest_files(before.into_iter()),
+            crate::routes::digest_files(after.into_iter()),
         );
     }
 
