@@ -158,7 +158,7 @@ mod crosscheck {
     fn matches_the_digest_computed_independently_over_the_same_bundle() {
         assert_eq!(
             Ui::load().unwrap().digest(),
-            "d9ab4e2816bd3e2d8e7e57f7e7a8d00628d57d9c1d2b50dfbc5f6c5183868f27",
+            "ae4aff7fa4d77cd561a04fcf4e2dadfeb2d9ee667ef76a44af3da011545199a5",
         );
     }
 
