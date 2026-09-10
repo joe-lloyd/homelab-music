@@ -5,7 +5,7 @@ The web app, the phone app and this app all use the same record-shaped mark.
 Rather than keep a second, hand-drawn copy that drifts, this reads the circles
 straight out of ui/public/icon.svg and redraws them at the sizes Tauri bundles.
 
-The SVG is four concentric shapes on a 24x24 viewBox, so parsing it properly
+The SVG is a few concentric shapes on a 24x24 viewBox, so parsing it properly
 would be more machinery than the job needs -- but the values are read from the
 file, not hardcoded here, so a colour change in the UI package still lands.
 
@@ -57,10 +57,14 @@ SS = 8
 
 
 def parse(svg_text):
-    """Pull the background rect and the concentric circles out of the SVG."""
+    """Pull the background rect, if there is one, and the concentric circles.
+
+    A missing rect is not an error, it is the point: the mark is the record,
+    and an icon with no background composites onto whatever surface shows it.
+    Baking a dark square in put a black tile on a light Windows taskbar and
+    inside macOS's own rounded icon shape.
+    """
     rect = re.search(r'<rect[^>]*fill="(#[0-9a-fA-F]+)"', svg_text)
-    if not rect:
-        sys.exit(f"{SVG}: no background <rect fill=...> found")
     circles = [
         (float(cx), float(cy), float(r), fill)
         for cx, cy, r, fill in re.findall(
@@ -70,7 +74,7 @@ def parse(svg_text):
     ]
     if not circles:
         sys.exit(f"{SVG}: no <circle> elements found")
-    return rect.group(1), circles
+    return (rect.group(1) if rect else (0, 0, 0, 0)), circles
 
 
 def render(size, background, circles):
