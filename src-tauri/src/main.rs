@@ -30,6 +30,10 @@ struct AppState {
     ui: Ui,
     proxy: RwLock<Option<Arc<Proxy>>>,
     path: RwLock<Option<Path>>,
+    /// Set once, during setup. The protocol handler is built before the app
+    /// exists, so the shell's own endpoints have to reach the handle this way
+    /// rather than closing over it.
+    app: RwLock<Option<tauri::AppHandle>>,
 }
 
 impl AppState {
@@ -68,6 +72,7 @@ fn main() {
         ui,
         proxy: RwLock::new(None),
         path: RwLock::new(None),
+        app: RwLock::new(None),
     });
 
     let protocol_state = state.clone();
@@ -95,6 +100,9 @@ fn main() {
         })
         .setup(move |app| {
             let state = setup_state.clone();
+            tauri::async_runtime::block_on(async {
+                *state.app.write().await = Some(app.handle().clone());
+            });
 
             // Decide the path before the window loads, so the first request
             // does not race the client being built.
@@ -117,7 +125,9 @@ fn main() {
             // report "could not check" on a perfectly healthy network.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                update::check(handle, false).await;
+                // auto_install: the window has just opened and nothing is
+                // playing, so a relaunch here costs the listener nothing.
+                update::check(handle, false, true).await;
             });
 
             // Same reasoning, same moment: ask home whether the UI we embedded
@@ -194,6 +204,14 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
         }
     }
 
+    // The shell's own endpoints, answered here and never proxied. They live
+    // under /api/ on purpose: music.home.arpa 404s an /api path it does not
+    // know, so the same UI bundle can ask "am I in the desktop app?" and get a
+    // straight answer instead of an HTML page from the SPA fallback.
+    if path.starts_with("/api/desktop/") {
+        return desktop_endpoint(&state, &path).await;
+    }
+
     // Everything else is the server's: /api/*, /img/*, and anything added later.
     let proxy = { state.proxy.read().await.clone() };
     let Some(proxy) = proxy else {
@@ -220,6 +238,48 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
             text(502, &format!("Could not reach home: {e}"))
         }
     }
+}
+
+/// The desktop shell's own small API: what version this is, and the update
+/// controls the settings page drives. Kept to three paths, because every one
+/// of them is a thing the web build has to cope with not having.
+async fn desktop_endpoint(state: &Arc<AppState>, path: &str) -> http::Response<Vec<u8>> {
+    let handle = state.app.read().await.clone();
+    let Some(handle) = handle else {
+        return json(503, &serde_json::json!({ "error": "the app is still starting" }));
+    };
+
+    match path {
+        "/api/desktop/status" => json(
+            200,
+            &serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "update_pending": handle.state::<update::PendingUpdate>().is_pending(),
+            }),
+        ),
+        "/api/desktop/update/check" => {
+            let found = update::check(handle, false, false).await;
+            json(200, &found)
+        }
+        "/api/desktop/update/install" => {
+            // Spawned rather than awaited: a successful install restarts the
+            // process, and the caller should get its answer before that
+            // happens rather than seeing the connection die.
+            tauri::async_runtime::spawn(async move { update::install(handle).await });
+            json(202, &serde_json::json!({ "state": "installing" }))
+        }
+        _ => json(404, &serde_json::json!({ "error": "no such desktop endpoint" })),
+    }
+}
+
+fn json<T: serde::Serialize>(status: u16, body: &T) -> http::Response<Vec<u8>> {
+    let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
+    http::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("cache-control", "no-store")
+        .body(bytes)
+        .expect("json response is well-formed")
 }
 
 /// Is this a path the app's own router should answer?
@@ -274,7 +334,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     if handle.state::<update::PendingUpdate>().is_pending() {
                         update::install(handle).await;
                     } else {
-                        update::check(handle, true).await;
+                        update::check(handle, true, false).await;
                     }
                 });
             }

@@ -4,10 +4,15 @@
 // wasteful and is not: these builds are 3-8 MB, so a full replacement costs
 // less than the machinery to avoid one would.
 //
-// The deliberate choice here is that finding an update never installs one. This
-// is a music player -- installing means relaunching, and relaunching mid-album
-// to save someone thirty seconds is a bad trade. A found update notifies; the
-// tray installs.
+// When it installs is the whole design. Installing means relaunching, and
+// relaunching mid-album to save someone thirty seconds is a bad trade. So the
+// startup check installs -- nothing is playing yet, the window has just
+// opened, and a relaunch there costs nothing. A check that finds an update
+// later notifies instead and waits to be told, from the tray or from settings.
+//
+// The effect is that the app updates itself without being asked, on the next
+// launch after a release, which is what "auto-update" has to mean for
+// something that lives in the tray for weeks at a time.
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -18,10 +23,22 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-/// Look for a newer release. `announce_when_current` separates the two callers:
-/// the tray asks a question and deserves an answer either way, while the
-/// startup check should stay quiet unless it has news.
-pub async fn check(app: AppHandle, announce_when_current: bool) {
+/// What a check found, for a caller that shows it rather than notifies it.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum Found {
+    Current { version: String },
+    Available { version: String },
+    Failed { error: String },
+}
+
+/// Look for a newer release.
+///
+/// `announce_when_current` separates the callers: one that asked a question
+/// deserves an answer either way, while a background check should stay quiet
+/// unless it has news. `auto_install` is the startup path, where relaunching
+/// is free because nothing is playing yet.
+pub async fn check(app: AppHandle, announce_when_current: bool, auto_install: bool) -> Found {
     let updater = match app.updater() {
         Ok(u) => u,
         Err(e) => {
@@ -29,7 +46,7 @@ pub async fn check(app: AppHandle, announce_when_current: bool) {
             if announce_when_current {
                 notify(&app, "Could not check for updates", &e.to_string());
             }
-            return;
+            return Found::Failed { error: e.to_string() };
         }
     };
 
@@ -37,12 +54,20 @@ pub async fn check(app: AppHandle, announce_when_current: bool) {
         Ok(Some(update)) => {
             let version = update.version.clone();
             log::info!("update available: {version}");
+            app.state::<PendingUpdate>().set(Some(update));
+
+            if auto_install {
+                log::info!("installing {version} at startup");
+                install(app).await;
+                return Found::Available { version };
+            }
+
             notify(
                 &app,
                 &format!("Homelab Music {version} is available"),
-                "Install it from the tray when you are not listening to something.",
+                "Install it from settings or the tray when you are not listening to something.",
             );
-            app.state::<PendingUpdate>().set(Some(update));
+            Found::Available { version }
         }
         Ok(None) => {
             log::info!("already on the latest version");
@@ -53,6 +78,7 @@ pub async fn check(app: AppHandle, announce_when_current: bool) {
                     env!("CARGO_PKG_VERSION"),
                 );
             }
+            Found::Current { version: env!("CARGO_PKG_VERSION").to_string() }
         }
         Err(e) => {
             // A failed check is not worth interrupting anyone over unless they
@@ -62,6 +88,7 @@ pub async fn check(app: AppHandle, announce_when_current: bool) {
             if announce_when_current {
                 notify(&app, "Could not check for updates", &e.to_string());
             }
+            Found::Failed { error: e.to_string() }
         }
     }
 }
