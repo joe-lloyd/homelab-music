@@ -110,7 +110,43 @@ jobs:
             code-signing certificate. The install scripts deal with what that
             means on each platform. Once installed, the app updates itself from
             the tray.
-          releaseDraft: false
+          # A DRAFT, published by the job below once every platform has
+          # uploaded. Not cosmetic: `releases/latest/download/latest.json` is
+          # what the app polls, and with a published release the first matrix
+          # job to finish becomes "latest" carrying only its own platform. For
+          # the twenty-five minutes the other three take, every Windows and
+          # Linux client checking for updates got "None of the fallback
+          # platforms [windows-x86_64] were found in the response platforms
+          # object" -- an error that looked like a broken build and was really
+          # a half-published release. A draft is not served as latest, so
+          # clients keep seeing the previous version until this one is whole.
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true # this is latest.json, which the app polls
           args: ${{ matrix.args }}
+
+  # Nothing is downloadable until this runs, and it only runs if all four
+  # platform jobs succeeded. One platform failing now leaves a draft to inspect
+  # rather than a release advertising an update half its users cannot install.
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release once every platform is in it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The updater reads latest.json, so a release without one would be
+          # published and silently un-updatable. Check before flipping it live.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > assets.txt
+          cat assets.txt
+          grep -qx 'latest.json' assets.txt
+          for want in 'x64-setup.exe' 'amd64.AppImage' 'aarch64.app.tar.gz' 'x64.app.tar.gz'; do
+            grep -q "$want" assets.txt || { echo "missing $want"; exit 1; }
+          done
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "published $TAG"
