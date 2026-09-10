@@ -46,7 +46,9 @@ pub async fn check(app: AppHandle, announce_when_current: bool, auto_install: bo
             if announce_when_current {
                 notify(&app, "Could not check for updates", &e.to_string());
             }
-            return Found::Failed { error: e.to_string() };
+            return Found::Failed {
+                error: e.to_string(),
+            };
         }
     };
 
@@ -78,7 +80,9 @@ pub async fn check(app: AppHandle, announce_when_current: bool, auto_install: bo
                     env!("CARGO_PKG_VERSION"),
                 );
             }
-            Found::Current { version: env!("CARGO_PKG_VERSION").to_string() }
+            Found::Current {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            }
         }
         Err(e) => {
             // A failed check is not worth interrupting anyone over unless they
@@ -88,7 +92,9 @@ pub async fn check(app: AppHandle, announce_when_current: bool, auto_install: bo
             if announce_when_current {
                 notify(&app, "Could not check for updates", &e.to_string());
             }
-            Found::Failed { error: e.to_string() }
+            Found::Failed {
+                error: e.to_string(),
+            }
         }
     }
 }

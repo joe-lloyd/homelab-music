@@ -246,7 +246,10 @@ async fn handle(state: Arc<AppState>, request: http::Request<Vec<u8>>) -> http::
 async fn desktop_endpoint(state: &Arc<AppState>, path: &str) -> http::Response<Vec<u8>> {
     let handle = state.app.read().await.clone();
     let Some(handle) = handle else {
-        return json(503, &serde_json::json!({ "error": "the app is still starting" }));
+        return json(
+            503,
+            &serde_json::json!({ "error": "the app is still starting" }),
+        );
     };
 
     match path {
@@ -268,7 +271,10 @@ async fn desktop_endpoint(state: &Arc<AppState>, path: &str) -> http::Response<V
             tauri::async_runtime::spawn(async move { update::install(handle).await });
             json(202, &serde_json::json!({ "state": "installing" }))
         }
-        _ => json(404, &serde_json::json!({ "error": "no such desktop endpoint" })),
+        _ => json(
+            404,
+            &serde_json::json!({ "error": "no such desktop endpoint" }),
+        ),
     }
 }
 
