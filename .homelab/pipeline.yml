@@ -36,7 +36,7 @@ pipelines:
           set -eu
           test -f ui/routes.json && test -s ui/public/app.js
           export CARGO_TARGET_DIR="$CARGO_HOME/target/homelab-music/${CONDUCTOR_TRUST:-local}"
-          node --test ui/test/*.test.js
+          (cd ui && node --test test/*.test.js)
           cargo test --manifest-path src-tauri/Cargo.toml
           mkdir -p dist
           for target in x86_64-apple-darwin aarch64-apple-darwin; do
