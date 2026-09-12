@@ -20,6 +20,32 @@
 version: 1
 
 pipelines:
+  download-macos:
+    runs_on: [macos]
+    timeout: 3600
+    concurrency: homelab-music-ci-macos
+    cache: [cargo]
+    submodules: true
+    min_free_gb: 25
+    artifacts:
+      - name: macos
+        path: dist/*.zip
+    steps:
+      - name: verify-and-bundle
+        run: |
+          set -eu
+          test -f ui/routes.json && test -s ui/public/app.js
+          export CARGO_TARGET_DIR="$CARGO_HOME/target/homelab-music/${CONDUCTOR_TRUST:-local}"
+          (cd ui && node --test test/*.test.js)
+          cargo test --manifest-path src-tauri/Cargo.toml
+          mkdir -p dist
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo tauri build --target "$target" --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            app="$CARGO_TARGET_DIR/$target/release/bundle/macos/Homelab Music.app"
+            test -x "$app/Contents/MacOS/homelab-music"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "dist/Homelab-Music-$target.zip"
+          done
+
   # The every-push path. No secrets, no bundles, nothing to publish -- just the
   # question "does this still build and pass its tests", answered on eliot.
   ci:
@@ -80,8 +106,16 @@ pipelines:
             exit 1
           }
       - name: test
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: |
+          # CARGO_HOME keeps downloaded crates; the job checkout is deleted.
+          # Keep compiled dependencies too, with separate caches by trust level.
+          export CARGO_TARGET_DIR="$CARGO_HOME/target/homelab-music/${CONDUCTOR_TRUST:-local}"
+          cargo test --manifest-path src-tauri/Cargo.toml
       - name: compile-x86_64
-        run: cargo tauri build --no-bundle --target x86_64-apple-darwin
+        run: |
+          export CARGO_TARGET_DIR="$CARGO_HOME/target/homelab-music/${CONDUCTOR_TRUST:-local}"
+          cargo tauri build --no-bundle --target x86_64-apple-darwin
       - name: compile-aarch64
-        run: cargo tauri build --no-bundle --target aarch64-apple-darwin
+        run: |
+          export CARGO_TARGET_DIR="$CARGO_HOME/target/homelab-music/${CONDUCTOR_TRUST:-local}"
+          cargo tauri build --no-bundle --target aarch64-apple-darwin
